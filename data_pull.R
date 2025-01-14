@@ -18,7 +18,6 @@ channel <- dbConnect(
 #' project specifically. 
 hlbt_covar_pull <- setDT(dbGetQuery(channel, paste(
   "
-  -- Pull covariate data, join with length, comp, and sample so that haul_seq is obtained for each record
   WITH X1 AS (
     SELECT 
       a.cruise, a.permit, a.length_seq, a.covariate_seq, a.number_of_animals, 
@@ -31,7 +30,7 @@ hlbt_covar_pull <- setDT(dbGetQuery(channel, paste(
       b.species_composition_seq AS COMP_SEQ, b.haul_seq AS HAUL_SEQ_L, 
       b.length_size, b.viability, b.condition_code, b.frequency,
       c.sample_seq,
-      d.haul_seq AS HAUL_SEQ_S
+      d.haul_seq AS HAUL_SEQ_S, d.sampled_by AS SAMPLED_BY_S
     FROM atl_halibut_condition_covar a 
       LEFT JOIN atl_length b
         ON a.cruise = b.cruise AND a.permit = b.permit AND a.length_seq = b.length_seq
@@ -45,14 +44,14 @@ hlbt_covar_pull <- setDT(dbGetQuery(channel, paste(
     SELECT 
       cruise, permit, haul_seq_l AS HAUL_SEQ, sample_seq, comp_seq, length_seq, covariate_seq, 
       frequency, length_size, viability, condition_code, number_of_animals,
-      assess_day, assess_hour, assess_min, assess_sec, release_code_c, ssc_c
+      assess_day, assess_hour, assess_min, assess_sec, release_code_c, ssc_c, sampled_by_s
     FROM X1 
     WHERE haul_seq_l IS NOT NULL
     UNION
     SELECT 
       cruise, permit, haul_seq_s AS HAUL_SEQ, sample_seq, comp_seq, length_seq, covariate_seq, 
       frequency, length_size, viability, condition_code, number_of_animals, 
-      assess_day, assess_hour, assess_min, assess_sec, release_code_c, ssc_c
+      assess_day, assess_hour, assess_min, assess_sec, release_code_c, ssc_c, sampled_by_s
     FROM X1 
     WHERE haul_seq_s IS NOT NULL
   )
@@ -67,7 +66,8 @@ hlbt_covar_pull <- setDT(dbGetQuery(channel, paste(
     g.time_net_landed_on_deck, g.sorting_begin_time, g.sorting_end_time, g.percent_of_hooks_not_primary, 
     g.is_time_net_landed_est, g.is_sorting_begin_time_est, g.is_sorting_end_time_est, g.special_study_code AS SSC_A,
     h.weight AS WEIGHT_KG,
-    i.presorted_weight, i.presorted_number  -- These don't show for all non-trawl hauls
+    i.presorted_weight, i.presorted_number,  -- These don't show for all non-trawl hauls,
+    j.sampled_by AS SAMPLED_BY_H
   FROM X2 e
     LEFT JOIN norpac_views.akr_obs_haul_mv f
       ON e.cruise = f.cruise AND e.permit = TO_CHAR(f.vessel_id) AND e.haul_seq = f.haul_seq
@@ -77,12 +77,27 @@ hlbt_covar_pull <- setDT(dbGetQuery(channel, paste(
       ON e.length_size = h.length
     LEFT JOIN obsint.atl_extrawl_presort_mv i
       ON e.cruise = i.cruise AND e.permit = i.permit AND e.haul_seq = i.haul_seq
+    LEFT JOIN norpac.atl_haul j
+      ON e.cruise = j.cruise AND e.permit = j.permit AND e.haul_seq = j.haul_seq
     WHERE h.species_code = 101
   "
 )))
+
+# Pull all observer badge numbers
+obs_pull <- setDT(dbGetQuery(channel, paste(
+  "
+  SELECT a.observer_seq, b.contract_number, c.cruise
+    FROM norpac.ols_observer a
+      LEFT JOIN norpac.ols_observer_contract b
+          ON a.observer_seq = b.observer_seq
+      LEFT JOIN norpac.ols_observer_cruise c
+          ON b.contract_number = c.contract_number
+  "
+)))
+
 
 #======================================================================================================================#
 # Save raw data pull ####
 #======================================================================================================================#
 
-save(hlbt_covar_pull, file = "data/hlbt_covar_pull.rdata")
+save(hlbt_covar_pull, obs_pull, file = "data/hlbt_covar_pull.rdata")
