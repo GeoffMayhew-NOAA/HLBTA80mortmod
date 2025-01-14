@@ -10,7 +10,7 @@ library(lubridate)    # for easy manipulation of date/times
 #======================================================================================================================#
 
 #' Load raw data: `hlbt_covar_pull` object
-load("data/hlbt_covar_pull.rdata")
+(load("data/hlbt_covar_pull.rdata"))
 
 # This project will focus on A80 EFP decksort operations (program code R16). Remove irrelevant columns.
 hlbt_dat <- hlbt_covar_pull[HAUL_PURPOSE_CODE == "R16", -c(
@@ -409,6 +409,28 @@ hlbt_dat[CRUISE.PERMIT.HAUL == "21745.3367.544", ":=" (TIME_NET_LANDED_ON_DECK =
 #' Sort times for ["22009.3694.1178"] and ["22009.3694.1180"] were switched
 hlbt_dat[CRUISE.PERMIT.HAUL == "22009.3694.1178", ":=" (TIME_NET_LANDED_ON_DECK = as.POSIXct("2017-08-15 20:34:00", tz = "GMT"), SORTING_END_TIME = as.POSIXct("2017-08-15 20:39:00", tz = "GMT"))]
 hlbt_dat[CRUISE.PERMIT.HAUL == "22009.3694.1180", ":=" (TIME_NET_LANDED_ON_DECK = as.POSIXct("2017-08-16 00:16:00", tz = "GMT"), SORTING_END_TIME = as.POSIXct("2017-08-16 00:25:00", tz = "GMT"))]
+
+# Merge in Observer Badge ID
+hlbt_dat[, OBS_ID := obs_pull[hlbt_dat, OBSERVER_SEQ, on = c("CRUISE" = "SAMPLED_BY_S")]]
+
+#=============================#
+# Save prepped data  file? ####
+#=============================#
+
+save(hlbt_dat, file = "data/hlbt_dat.rdata")
+
+ggplot(hlbt_dat, aes(y = VIABILITY, x = ASSESSMENT_TIME)) + geom_boxplot() + coord_cartesian(xlim = c(0, 35))
+ggplot(hlbt_dat, aes(y = VIABILITY, x = HAUL_MT)) + geom_boxplot() + coord_cartesian(xlim = c(0, 60))
+ggplot(hlbt_dat, aes(y = VIABILITY, x = TOW_DUR)) + geom_boxplot() + coord_cartesian(xlim = c(0, 7))
+# Length/weight doesn't seem as important when plotted because most halibut are small, but larger halibut although rare, make up
+# more of the total mortality weight and tend to be in better condition the larger they are
+ggplot(hlbt_dat, aes(y = VIABILITY, x = LENGTH_SIZE)) + geom_boxplot() + coord_cartesian(xlim = c(0, 125))
+ggplot(hlbt_dat, aes(y = VIABILITY, x = WEIGHT_KG)) + geom_violin() + coord_cartesian(xlim = c(0, 10))
+ggplot(hlbt_dat[LENGTH_SIZE >= 100], aes(y = VIABILITY, x = WEIGHT_KG)) + geom_violin(draw_quantiles = c(0.25, 0.5, 0.75))
+
+
+summary(hlbt_dat)
+hlbt_dat[, table(GEAR)]  #DO I EVEN NEED GEAR? Tis is observer gear code
 
 #======================#
 # How are we doing? ####
