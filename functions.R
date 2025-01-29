@@ -69,17 +69,14 @@ CM_score <- function(x) {
 # The current predict methods for 'clm' objects does well for the class, but doesn't give the probabilties for each class
 # Currently, there are not any predict() methods for 'clmm' objects. We can igore the random intercept for each haul and striclty use the model coefficients to get predicted classes 
 
-predict_clm <- function(mod, ran_int = "none", new_data){
-  # mod <- clmm(VIAB ~ TOOW*HAUL_MT + LENGTH_SIZE + (1|HAUL_ID), data=sub, Hess=T)      # for random intercept model with interaction
-  # mod <- clm(VIAB ~ TOOW*HAUL_MT + LENGTH_SIZE, data=sub, Hess=T)
-  # ran_int <- "none"      # default - assumes no random intercept (which should be centered ~0 anyway)
-  # ran_int <- "average"   # applies average of random intercept 
-  # ran_int <- "actual"    # only for use when new_data is null
+predict_clm <- function(mod, ran_int = "none", new_data = NULL){
+  # mod <- clm(VIABILITY ~ ASSESSMENT_TIME + HAUL_MT + WEIGHT_KG + PERMIT, data = hlbt_dat.scale); new_data <- NULL; ran_int <- "none"
+  # mod <- clm(VIABILITY ~ ASSESSMENT_TIME + HAUL_MT + WEIGHT_KG, data = hlbt_dat.scale); new_data <- NULL; ran_int <- "none"
   
-  if(!missing(new_data) & ran_int=="actual") stop("Cannot apply random intercepts to a new dataset")
+  if(!is.null(new_data) & ran_int=="actual") stop("Cannot apply random intercepts to a new dataset")
   
-  # Get predictions for orginal dataset in the model object or for a new dataset?
-  if(missing(new_data)){
+  # Get predictions for original dataset in the model object or for a new dataset?
+  if(is.null(new_data)){
     dat <- data.table(mod$model)            # Combine data and thresholds
   } else {
     dat <- new_data[, colnames(mod$model), with=F]
@@ -89,13 +86,21 @@ predict_clm <- function(mod, ran_int = "none", new_data){
   coefs <- names(mod$beta)                # Get names of all coefficients
   
   #  Combine data with model coefficients
-  if(length(coefs) < 1){
+
+  ## First, identify the covariates with the categorical fixed effects
+  mod_terms <- attr(mod$terms, "dataClasses")
+  mod_terms <- mod_terms[names(mod_terms) %in% labels(terms(mod))]
+  terms.covar <- names(mod_terms)[mod_terms == "numeric"]
+  terms.cat   <- names(mod_terms)[mod_terms %in% c("factor", "character")]
+  
+  ## Handle the covariates, if present
+  if(length(terms.covar) < 1){
     coef_sum <- rep(0, nrow(dat))             # If there are no coefficients (null model), make coef_sum = 0
   } else {
     # Combine data with coefficients
-    coef_tbl <- list()                        # Initialize ouputs
-    for(i in 1:length(coefs)){
-      focus_coef <- coefs[i]
+    coef_tbl <- list()                        # Initialize outputs
+    for(i in 1:length(terms.covar)){
+      focus_coef <- terms.covar[i]
       if(focus_coef %like% ":"){
         # if the term is an interaction, multiply data across rows and multiply by coefficient
         coef_tbl[[focus_coef]] <- apply(dat[, unlist(strsplit(focus_coef, split=":")), with=F] , MARGIN = 1, FUN=prod) * mod$beta[[focus_coef]]
@@ -107,6 +112,22 @@ predict_clm <- function(mod, ran_int = "none", new_data){
     coef_sum <- rowSums(as.data.table(coef_tbl))   # Sum up model terms
   }
   
+  ## Handle the categorical predictors if present
+  if(length(terms.cat) > 1) {
+    cat_tbl <- list()
+    for(i in 1:length(terms.cat)){
+      focus_coef <- terms.cat[i]
+      focus_cat_coefs <- as.data.table(mod$beta[grepl(paste0("^", focus_coef), "*" , x = names(mod$beta))], keep.rownames = T)
+      focus_cat_coefs[, (focus_coef) := sub(paste0("^", focus_coef), "", V1)]
+      # Merge in coefficients for each level, and assign 0 to the base level
+      cat_coef_dt <- dat[, ..focus_coef]
+      cat_coef_dt[, value := focus_cat_coefs[cat_coef_dt, V2, on = .(PERMIT)]][is.na(value), value := 0]
+      cat_tbl[[focus_coef]] <- cat_coef_dt$value
+    }
+    # Add to the covariate sums
+    coef_sum <- coef_sum + rowSums(as.data.table(cat_tbl))
+  }
+
   # For clmm objects, include random intercepts? By default predictions are made without them, but change ran_int if you want to use actuals or global averages of random intercepts
   if(class(mod)=="clmm"){
     if(ran_int == "actual"){
@@ -143,6 +164,7 @@ predict_clm <- function(mod, ran_int = "none", new_data){
   return(list(Class = classes, Mort = mortality, Prob = probs))
   
 }
+
 
 # Calculates classification scores as well as invidual-level bias and variance. Works with both clm and randomForest models
 mod_score <- function(x, new_data) {
