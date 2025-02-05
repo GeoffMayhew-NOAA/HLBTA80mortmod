@@ -413,9 +413,103 @@ hlbt_dat[CRUISE.PERMIT.HAUL == "22009.3694.1180", ":=" (TIME_NET_LANDED_ON_DECK 
 # Merge in Observer Badge ID
 hlbt_dat[, OBS_ID := obs_pull[hlbt_dat, OBSERVER_SEQ, on = c("CRUISE" = "SAMPLED_BY_S")]]
 
-#=============================#
-# Save prepped data  file? ####
-#=============================#
+#=====================#
+# Temperature data ####
+#=====================#
+
+# I pulled this data years ago - the website currently (as of Jan-2025) only lets you pull back to 2022.
+
+temp_haul <- readRDS("C:/Users/geoff.mayhew/Work/GitLab_Repos/halibut-covariate-studies/data/trw_efp_dat.rds")
+temp_haul <- unique(temp_haul[, .(CRUISE, PERMIT, HAUL_SEQ, TMP_SF, TMP_2M)])
+
+hlbt_dat <- temp_haul [hlbt_dat, on = .(CRUISE, PERMIT, HAUL_SEQ)]
+hlbt_dat[is.na(TMP_SF) | is.na(TMP_2M)]
+
+ggplot(temp_haul, aes(x = TMP_SF, y = TMP_2M)) + geom_point()  
+# There are a few bizarre TMP_SF measurements, but I think I really care only about air temp
+temp_haul[TMP_SF < -150]
+
+# Below is the code that was originally used to get it
+if(F) {
+  
+  # Pull modeled atmospheric temperature data for trawl dataset
+  dat_coord <- unique(hlbt_dat[, .(HAUL_ID, LAT_D, LON_D, RETRV)])
+  # TODO - Double-check that the coordinates are being handled correctly, since I used obs_int longitudes (-180 to +180) opposed to what is in atl_haul tables
+  dat_coord[, ':=' (
+    LAT_CUT = round(LAT_D/0.5)*0.5,                                               # Round lat to nearest 0.5
+    LON_CUT = ifelse(LON_D > 0, 0, 360) + round(LON_D/0.5)*0.5,                   # Round lon to nearest 0.5, convert to degrees East (0 to 360, not -180 to +180)
+    DAT_CUT = round_date(as.POSIXct(as.POSIXlt(RETRV, tz="UTC")), "3 hours"))]    # Round dates to nearest 3 hours and convert to UTC
+  
+  ggplot(unique(dat_coord[, .(LAT_D, LON_D)]), aes(x=LON_D, y=LAT_D)) + geom_point() + xlim(-180, -145)  
+  # What hauls have LONG_D around 150?
+  dat_coord[LON_D > - 155]
+  
+  range(dat_coord$LON_CUT)  # Degrees East is degrees east of Prime Meridian
+  ggplot(unique(dat_coord[, .(LAT_CUT, LON_CUT)]), aes(x=LON_CUT, y=LAT_CUT)) + geom_point()             # This looks right...
+  
+  # For a given LAT/LON, there are big gaps where no hauls exist. Splitting a LAT/
+  # LON combination into time periods should make the pull go much faster. 
+  dat_coord[, GRP1 := .GRP, keyby=.(LAT_CUT, LON_CUT)]                            # Create grouping by LAT/LON combo
+  # ggplot(dat_coord, aes(x=RETRV, y=GRP1)) + geom_point()                        # Large gaps on x-axis mean lots of time wasted pulling. Split GRP1 into smaller time chunks
+  setorder(dat_coord, GRP1, RETRV)                                                # Order by LAT/LOT and date
+  dat_coord[
+  ][, DIFF := as.numeric(RETRV - shift(RETRV), units="days"), by=.(GRP1)          # Within GRP1, count days between hauls
+  ][, OVER_50 := cumsum(ifelse(!is.na(DIFF), DIFF > 50, F)), by=.(GRP1)           # Flag if over 50 days after previous haul
+  ][, GRP2 := .GRP, keyby = .(GRP1, OVER_50)                                      # Create new subgrouping, spltting GRP1 into temporal chunks
+  ][, c("DIFF", "OVER_50") := NULL]
+  
+  # Summarize date ranges of each LAT/LON/Time chunk (GRP2)
+  dat_coord_summary <- dat_coord[, .(
+    DAT_MIN = min(DAT_CUT),
+    DAT_MAX = max(DAT_CUT), 
+    N = .N),
+    by = .(LAT_CUT, LON_CUT, GRP2)]      
+  temp_dat <- vector(mode="list", length=nrow(dat_coord_summary))                 # initialize list for results
+  n_size <- nchar(nrow(dat_coord_summary))
+  # TODO is there a way to sent all of these pulls at one time instead of sequentially?
+  
+  for(i in 1:nrow(dat_coord_summary)){
+    
+    focus <- dat_coord_summary[i,]
+    focus[, DAT_MAX := DAT_MAX + days(1)]                                         # Add one day to max so at least one full day of data is collected
+    focus[, ':=' (
+      DAT_MIN = paste(gsub(DAT_MIN, pattern=" ", replacement="T"), "Z", sep=""), 
+      DAT_MAX = paste(gsub(DAT_MAX, pattern=" ", replacement="T"), "Z", sep=""))] # convert dates into formats that is needed for data pull
+    # prepare URL for data pull
+    base <- "https://coastwatch.pfeg.noaa.gov/erddap/griddap/NCEP_Global_Best.csv?"
+    url <- paste0(
+      c("tmpsfc", "tmp2m"),                                                       # 'tmpsfc' is surface temp, 'tmp2m' is temp 2m above surface
+      paste0(                                                                     
+        "[(", focus$DAT_MIN, "):1:(", focus$DAT_MAX, ")]",                        # Range of dates
+        "[(", focus$LAT_CUT, "):1:(", focus$LAT_CUT, ")]",                        # Range of latitudes
+        "[(", focus$LON_CUT, "):1:(", focus$LON_CUT, ")]"))                       # Range of longitudes
+    Durl <- paste(base, paste(url, collapse=","), sep="")                         # Combine with base to Create final URL
+    
+    # pull data from https://coastwatch.pfeg.noaa.gov/erddap/griddap/NCEP_Global_Best.html
+    message(paste(formatC(i, width=n_size), "| Retrieving data for   LAT:", formatC(focus$LAT_CUT, digits=1, format="f"), "  LON:", formatC(focus$LON_CUT, digits=1, format="f"), "  ", as.Date(focus$DAT_MIN), "to", as.Date(focus$DAT_MAX), sep=" "))
+    pull <- fread(Durl, showProgress = F)[-1]                                     # remove first row, which currently has units
+    # Format the data pull 
+    pull <- pull[
+    ][, DAT_CUT := as.character(gsub("T", gsub("Z", time, r=""), r=" "))          # Replace 'T' with space and 'Z' with blank
+    ][, .(
+      LAT_CUT = as.numeric(latitude), LON_CUT = as.numeric(longitude), DAT_CUT,   # Convert LAT/LON to numeric
+      TMP_SF = as.numeric(tmpsfc)-273.15, TMP_2M = as.numeric(tmp2m)-273.15)]     # Convert Kelvin to C
+    
+    # Merge temperature data in to hauls
+    sub <- dat_coord[GRP2 == focus$GRP2]
+    sub[, DAT_CUT := format(sub$DAT_CUT, format="%Y-%m-%d %H:%M:%S")]             # Convert POSIXct to character (without losing H:M:S) 
+    temp_dat[[i]] <- pull[sub, on=.(LAT_CUT, LON_CUT, DAT_CUT)]
+    
+  }
+  temp_fin <- rbindlist(temp_dat)
+  trw_dat[, c("TMP_SF", "TMP_2M") := temp_fin[trw_dat, .(TMP_SF, TMP_2M), on="HAUL_ID"]] # merge in temperature data
+  if(nrow(trw_dat[is.na(TMP_2M)])) warning("Some records are still missing temperature data!")
+  
+}
+
+#============================#
+# Save prepped data file? ####
+#============================#
 
 save(hlbt_dat, file = "data/hlbt_dat.rdata")
 
