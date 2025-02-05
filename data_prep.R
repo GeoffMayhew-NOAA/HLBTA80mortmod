@@ -650,3 +650,11 @@ hlbt_dat[CRUISE==21783 & PERMIT== 3694 & HAUL_SEQ== 500,] # No clear correction.
 
 
 #' TODO *Air Temperature data pull?*
+
+
+library(FMAtools)
+# Upload data to project folder
+gdrive_upload(
+  local_path = "data/hlbt_dat.rdata",
+  gdrive_dribble = gdrive_set_dribble("Analysts/Geoff/HLBTA80mortmod/data")
+)

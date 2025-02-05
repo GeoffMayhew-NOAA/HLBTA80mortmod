@@ -5,8 +5,10 @@
 library(data.table)
 library(ordinal)  # for clm(), cumulative link models and clmm(), the mixed model version
 library(ggplot2)
+library(FMAtools)
 
 # Load the dataset
+gdrive_download("data/hlbt_dat.rdata", gdrive_set_dribble("Analysts/Geoff/HLBTA80mortmod/data"))
 (load("data/hlbt_dat.rdata"))
 source("functions.R")
 
