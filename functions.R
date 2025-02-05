@@ -73,6 +73,9 @@ predict_clm <- function(mod, ran_int = "none", new_data = NULL){
   # mod <- clm(VIABILITY ~ ASSESSMENT_TIME + HAUL_MT + WEIGHT_KG + PERMIT, data = hlbt_dat.scale); new_data <- NULL; ran_int <- "none"
   # mod <- clm(VIABILITY ~ ASSESSMENT_TIME + HAUL_MT + WEIGHT_KG, data = hlbt_dat.scale); new_data <- NULL; ran_int <- "none"
   
+  # mod <- object; ran_int = "actual"; new_data <- NULL
+  
+  
   if(!is.null(new_data) & ran_int=="actual") stop("Cannot apply random intercepts to a new dataset")
   
   # Get predictions for original dataset in the model object or for a new dataset?
