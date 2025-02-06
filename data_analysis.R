@@ -5,7 +5,7 @@
 library(data.table)
 library(ordinal)  # for clm(), cumulative link models and clmm(), the mixed model version
 library(ggplot2)
-library(FMAtools)
+library(FMAtools) # devtools::install_github("Alaska-Fisheries-Monitoring-Analytics/FMAtools")
 
 # Load the dataset
 gdrive_download("data/hlbt_dat.rdata", gdrive_set_dribble("Analysts/Geoff/HLBTA80mortmod/data"))
@@ -243,23 +243,79 @@ anova(clm.4.a, clm.4.a.m)
 nrow(hlbt_dat) # 106,563 halibut
 uniqueN(hlbt_dat$CRUISE.PERMIT.HAUL)  # 13,462 hauls, or 106563/13462 ~ 7.916 halibut per haul
 
+#======================================================================================================================# 
+# [][][][][][] ------
 # START OVER HERE ----
 
-# Scale the data, set random variables as to factors
+#' \NOTE sorting_begin_time is missing for most of 2017 dataset (although we have end time for all hauls), which would
+#' be useful if we wanted to see if the delay between RETRV and SORTING_BEGIN_TIME varies and might have affected 
+#' survival, and not only TOW_DUR (RETRV - DEPLOY)
 
-#'\TODO  *If I trim to 35 minutes, I can't be sure if total halibut assessed is correct! CHECK THIS!*
+# More data prep!
 
-hlbt_dat |>
-  _[, TRIP_ID := as.factor(.GRP), by = .(CRUISE, PERMIT, TRIP_SEQ)
-  ][, HAUL_ID := as.factor(.GRP), by = .(CRUISE, PERMIT, HAUL_SEQ)]
+# Subset only the columns used in the analysis
+hlbt_dat.scale <- hlbt_dat[, .(VIABILITY, ASSESSMENT_TIME, SORT_DUR, PRESORTED_NUMBER, LAST_HAL, HAUL_MT, TOW_DUR, FISHING_DEPTH, WEIGHT_KG, TMP_2M, PERMIT, TRIP_SEQ, OBS_ID, CRUISE, PERMIT, TRIP_SEQ, HAUL_SEQ)]
 
-hlbt_dat.scale <- hlbt_dat[, .(VIABILITY, ASSESSMENT_TIME, SORT_DUR, PRESORTED_NUMBER, LAST_HAL, HAUL_MT, TOW_DUR, FISHING_DEPTH, WEIGHT_KG, TMP_2M, PERMIT, TRIP_SEQ, OBS_ID, TRIP_ID, HAUL_ID)]
+# Set random effects columns as factors
 hlbt_dat.scale[, ':=' (PERMIT = as.factor(PERMIT), OBS_ID = as.factor(OBS_ID))]
+
+# Create unique identifiers for trips and hauls, also random effects coded as factors
+hlbt_dat.scale |>
+  _[, TRIP_ID := as.factor(.GRP), by = .(CRUISE, PERMIT, TRIP_SEQ)
+  ][, HAUL_ID := as.factor(.GRP), by = .(CRUISE, PERMIT, HAUL_SEQ)
+  ][, c("TRIP_SEQ", "HAUL_SEQ") := NULL]
+
 #' Use SORT_DUR + 1 or LAST_HAL to determine the duration of each haul's sorting operation
 hlbt_dat.scale[, SORT_END := pmax(SORT_DUR + 1, LAST_HAL)]
-# Only 2,080 our of 106,563 halibut, or 1.95%were assessed after 35 minutes. We should truncate our dataset to 35 minutes
+
+## Trim hauls to 35 minutes ----
+
+#' Trim the data set to 35-min decksorts. For hauls with sorts longer than 35 min, must adjust the total number of 
+#' halibut in the decksort, sort duration, and exclude any halibut assessed after 35 minutes. This will cause some hauls
+#' to be excluded from the analysis.
+
+#' For each haul, count number of assessments before 35 minutes and the times of the assessments on either side of 35 minutes 
+suppressWarnings(hlbt_dat.sort <- unique(hlbt_dat.scale[, .(
+  N = .N,
+  assessed_within_35 = sum(ASSESSMENT_TIME <= 35),
+  below_35 = max(ASSESSMENT_TIME[ASSESSMENT_TIME <= 35]), 
+  above_35 = min(ASSESSMENT_TIME[ASSESSMENT_TIME > 35])),
+  keyby = .(HAUL_ID, PRESORTED_NUMBER, SORT_DUR, LAST_HAL)]))
+#' Calculate ratio of presorted halibut to assessed (should be around 5 or 10), might be more less if PRESORTED_NUMBER 
+#' < 5. Also, calclate number of presorted halibut per minute of decksort
+hlbt_dat.sort |>
+  _[, RATIO := round(PRESORTED_NUMBER / N, 3)
+  ][, HLBT_PER_MIN := PRESORTED_NUMBER / SORT_DUR]  
+
+# For presorts > 35 minutes and <= 5 halibut, estimate number of presorted halibut in 35 minutes, rounding up.
+hlbt_dat.sort[PRESORTED_NUMBER <= 5 & SORT_DUR > 35, EXP_PRESORT := round(HLBT_PER_MIN * 35)]
+
+# For presorts > 35 minutes and > 5 halibut, use the assessment time of the halibut ~ 35 minutes to determine expected presorted number
+# If additional halibut were assessed after 35, assume number of halibut using RATIO and difference between below_35 and above 35
+hlbt_dat.sort[SORT_DUR > 35 & is.na(EXP_PRESORT) & !is.infinite(above_35), EXP_PRESORT := (
+  round(
+    # Estimate Number of halibut presorted by the time the last assessment before 35 minutes occurred and the sampling ratio
+    assessed_within_35 * RATIO + 
+      # Add halibut based on where the 35 minute mark occurred in relation to when halibut were assessed on either side of the 35 minute mark
+      ((35 - below_35) / (above_35 - below_35)) * RATIO)
+)]
+# The remaining cases are where the last assessed halibut were within 35 minutes,
+# Only two cases where N != assessed within 35, 2 hauls with 0 assessed
+hlbt_dat.sort[SORT_DUR > 35 & is.na(EXP_PRESORT) & N != assessed_within_35]  
+# In the rest of cases, we will just assume that the decksorts went a little long but all halibut were sorted out within 35 minutes. Since
+hlbt_dat.sort[SORT_DUR > 35 & is.na(EXP_PRESORT) & N == assessed_within_35]
+
+# Update PRESORTED_NUMBER if EXP_PRESORT at 35 minutes was estimated
+hlbt_dat.sort[!is.na(EXP_PRESORT), EXP_PRESORT := PRESORTED_NUMBER]
+hlbt_dat.scale[, PRESORTED_NUMBER := hlbt_dat.sort[hlbt_dat.scale, EXP_PRESORT, on = .(HAUL_ID)]]
+
+# Update sort duration, truncating to 35
 hlbt_dat.scale[SORT_END > 35, SORT_END := 35]
+# Only 2,080 our of 106,563 halibut, or 1.95%were assessed after 35 minutes. We should truncate our dataset to 35 minutes
+assess_count.old <- nrow(hlbt_dat.scale)
 hlbt_dat.scale <- hlbt_dat.scale[ASSESSMENT_TIME <= 35 ]
+assess_count.diff <- assess_count.old - nrow(hlbt_dat.scale)
+cat(paste0(assess_count.diff, " (", round(assess_count.diff/assess_count.old, 4) * 100,  "%) halibut were assessed after 35 minutes and omitted. "))
 
 # Scale the numeric variables so models converge more easily
 #' TODO scale the values separately - individual vs haul-level metrics!
@@ -270,7 +326,7 @@ rm(hlbt_dat.scale.haul)
 hlbt_dat.scale[, c("ASSESSMENT_TIME.s", "WEIGHT_KG.s") := lapply(.SD, scale), .SDcols = c("ASSESSMENT_TIME", "WEIGHT_KG")]
 
 
-# Basic Model
+# Basic Model ----
 
 #' WTF Now I get errors?  *unable to interpret 'formula', 'scale' or 'nominal'*
 m1 <- clm(VIABILITY ~ ASSESSMENT_TIME.s, data = hlbt_dat.scale)
